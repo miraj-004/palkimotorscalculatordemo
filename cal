@@ -1,0 +1,420 @@
+import { useState } from "react";
+ 
+const GF = "@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');";
+ 
+const CSS = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  input[type=range] { -webkit-appearance:none; height:4px; border-radius:2px; background:#1a2e1e; outline:none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:#00e676; cursor:pointer; box-shadow:0 0 10px #00e67680; }
+  input[type=number]::-webkit-inner-spin-button { opacity:.3; }
+  input:focus { border-color:#00e67660 !important; }
+  button:hover { opacity:.85; }
+  .mg { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .m4 { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .m2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .pg { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  @media (max-width:720px) {
+    .mg { grid-template-columns:1fr !important; }
+    .m4 { grid-template-columns:1fr 1fr !important; }
+    .pg { grid-template-columns:1fr 1fr !important; }
+  }
+  @media (max-width:420px) {
+    .m4 { grid-template-columns:1fr !important; }
+  }
+`;
+ 
+const MODELS = [
+  { id:"v2",  name:"Cityboy V2", tag:"City Commuter",  price:850000,  range:150, kpk:20, spd:50,  seats:4, badge:"BEST VALUE", c:"#00e676",
+    note:"Battery-swap capable. Ideal for Dhaka rideshare & daily commute." },
+  { id:"v3",  name:"Cityboy V3", tag:"Urban Family",   price:1800000, range:200, kpk:15, spd:80,  seats:5, badge:"POPULAR",    c:"#29b6f6",
+    note:"Upgraded range & comfort. BRTA approval in process." },
+  { id:"rv",  name:"ReVolt V2",  tag:"Light Pickup",   price:1850000, range:150, kpk:12, spd:70,  seats:2, badge:"FLEET",       c:"#ffa726",
+    note:"Built for last-mile delivery & fleet operations." },
+  { id:"x27", name:"Palki X27",  tag:"Electric SUV",   price:2835000, range:301, kpk:8,  spd:120, seats:5, badge:"PREMIUM",     c:"#ba68c8",
+    note:"37kWh LFP battery. Bangladesh's first affordable EV SUV." },
+];
+ 
+const FUEL_LABELS = { petrol:"Petrol/Octane", diesel:"Diesel", cng:"CNG" };
+const UNIT_LABELS  = { petrol:"৳/L", diesel:"৳/L", cng:"৳/m³" };
+const KM_PER_UNIT  = { petrol:10, diesel:13, cng:30 };
+const CO2_PER_KM   = { petrol:.231, diesel:.206, cng:.050 };
+ 
+export default function PalkiCalc() {
+  const [km,      setKm]      = useState(60);
+  const [fuel,    setFuel]    = useState("petrol");
+  const [usage,   setUsage]   = useState("personal");
+  const [mFuelIn, setMFuelIn] = useState("");
+  const [tenure,  setTenure]  = useState(36);
+  const [dp,      setDp]      = useState(20);
+  const [P,       setP]       = useState({ petrol:135, diesel:115, cng:43, elec:10 });
+  const [openP,   setOpenP]   = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [updated, setUpdated] = useState("Jun 2026 research data");
+  const [selId,   setSelId]   = useState(null);
+ 
+  // ── Calculations ──────────────────────────────────────────────────────
+  const mKm       = km * 30;
+  const autoFuel  = (mKm / KM_PER_UNIT[fuel]) * P[fuel];
+  const mFuel     = mFuelIn !== "" ? (+mFuelIn || 0) : autoFuel;
+ 
+  const autoMdl = () => {
+    if (usage === "delivery") return MODELS[2];
+    if (km > 200)             return MODELS[3];
+    if (km > 100)             return MODELS[1];
+    return MODELS[0];
+  };
+  const mdl     = selId ? (MODELS.find(m => m.id === selId) || autoMdl()) : autoMdl();
+  const mEv     = (mKm / mdl.kpk) * P.elec;
+  const savings  = mFuel - mEv;
+  const annSave  = savings * 12;
+ 
+  const loanAmt  = mdl.price * (1 - dp / 100);
+  const r        = 0.15 / 12;
+  const emi      = loanAmt * r * Math.pow(1+r,tenure) / (Math.pow(1+r,tenure)-1);
+  const netBen   = savings - emi;
+ 
+  const mCo2     = mKm * (CO2_PER_KM[fuel] - 0.020);
+  const treeEq   = Math.max(0, Math.round(mCo2 * 12 / 21));
+  const bkEven   = savings > 0 ? Math.ceil(mdl.price / savings) : null;
+  const savePct  = mFuel > 0 ? Math.round((savings / mFuel) * 100) : 0;
+ 
+  // ── Live price refresh via Anthropic API ──────────────────────────────
+  const refreshPrices = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 800,
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          messages: [{
+            role: "user",
+            content: `Search for the current fuel & electricity prices in Bangladesh today ${new Date().toLocaleDateString("en-GB")}.
+I need:
+1. Petrol/Octane 95 price per liter in BDT
+2. Diesel price per liter in BDT  
+3. CNG price per cubic meter (m³) in BDT for vehicles
+4. Residential electricity price per kWh in BDT (DESCO Dhaka domestic tariff)
+ 
+Respond with ONLY this JSON, no markdown, no text, no code block:
+{"petrol": NUMBER, "diesel": NUMBER, "cng": NUMBER, "elec": NUMBER}`
+          }]
+        })
+      });
+      const data = await res.json();
+      const txt  = data.content.filter(b => b.type === "text").map(b => b.text).join(" ");
+      const hit  = txt.match(/\{\s*"petrol"\s*:\s*[\d.]+[^}]*\}/);
+      if (hit) {
+        const p = JSON.parse(hit[0]);
+        setP(v => ({
+          petrol: +p.petrol > 0 ? +p.petrol : v.petrol,
+          diesel: +p.diesel > 0 ? +p.diesel : v.diesel,
+          cng:    +p.cng    > 0 ? +p.cng    : v.cng,
+          elec:   +p.elec   > 0 ? +p.elec   : v.elec,
+        }));
+        setUpdated(`Live · ${new Date().toLocaleTimeString("en-BD", { hour:"2-digit", minute:"2-digit" })}`);
+      } else {
+        setUpdated("Searched · no change detected");
+      }
+    } catch (_) {
+      setUpdated("Refresh failed — using saved rates");
+    }
+    setLoading(false);
+  };
+ 
+  // ── Helpers ────────────────────────────────────────────────────────────
+  const f = n => Math.round(n).toLocaleString("en-IN");
+  const L = n => (n / 100000).toFixed(1);
+ 
+  const chip = (val, cur, fn, lbl) => (
+    <button key={val} onClick={() => fn(val)} style={{
+      background: val === cur ? "#00e676" : "#0d1a10",
+      border:     "1px solid " + (val === cur ? "#00e676" : "#1d2e1f"),
+      color:      val === cur ? "#050c06" : "#5a8060",
+      padding:    "6px 13px", borderRadius:5, fontSize:12,
+      fontWeight: val === cur ? 700 : 500, cursor:"pointer",
+      letterSpacing:.5, fontFamily:"inherit", transition:"all .15s"
+    }}>{lbl}</button>
+  );
+ 
+  const Metric = ({ label, val, sub, col }) => (
+    <div style={{ background:"#0a140d", border:"1px solid #182a1a", borderRadius:8, padding:"11px 13px" }}>
+      <div style={{ fontSize:9, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:4 }}>{label}</div>
+      <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:17, fontWeight:700, color:col||"#d4edda" }}>{val}</div>
+      {sub && <div style={{ fontSize:9, color:"#3a5040", marginTop:2 }}>{sub}</div>}
+    </div>
+  );
+ 
+  const row = (k, v, c, bold) => (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 }}>
+      <span style={{ fontSize:11, color: bold ? "#c4ddc8" : "#5a8060", fontWeight: bold?600:400 }}>{k}</span>
+      <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:13, fontWeight:bold?700:600, color:c||"#d4edda" }}>{v}</span>
+    </div>
+  );
+ 
+  // ── Render ─────────────────────────────────────────────────────────────
+  return (
+    <>
+      <style>{GF + CSS}</style>
+      <div style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", background:"#060c09", color:"#d4edda", minHeight:"100vh", paddingBottom:52 }}>
+ 
+        {/* HEADER */}
+        <div style={{ background:"linear-gradient(160deg,#060e08,#091408)", borderBottom:"1px solid #0f1e12", padding:"20px 22px 18px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:10 }}>
+            <div>
+              <div style={{ fontFamily:"'Bebas Neue',cursive", fontSize:28, letterSpacing:4, color:"#00e676", lineHeight:1 }}>
+                PALKI EV SAVINGS CALCULATOR
+              </div>
+              <div style={{ fontSize:10, color:"#3a5e40", letterSpacing:2, textTransform:"uppercase", marginTop:4 }}>
+                Real Numbers · Bangladesh Market Rates · Made in Dhaka 🇧🇩
+              </div>
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:5 }}>
+              <button onClick={refreshPrices} disabled={loading} style={{
+                background: loading ? "#0a1a0e" : "#00e67612",
+                border:"1px solid #00e676", color:"#00e676",
+                padding:"7px 15px", borderRadius:5, fontSize:11,
+                fontWeight:700, letterSpacing:1, cursor:loading?"wait":"pointer",
+                fontFamily:"inherit"
+              }}>
+                {loading ? "⟳  SEARCHING WEB..." : "⟳  REFRESH MARKET RATES"}
+              </button>
+              <span style={{ fontSize:9, color:"#2e4830", letterSpacing:.5 }}>{updated}</span>
+            </div>
+          </div>
+        </div>
+ 
+        {/* MAIN 2-COL */}
+        <div className="mg" style={{ padding:"16px 18px 0" }}>
+ 
+          {/* ── LEFT: INPUTS ── */}
+          <div style={{ background:"#0c1410", border:"1px solid #162518", borderRadius:12, padding:"18px 20px" }}>
+            <div style={{ fontFamily:"'Bebas Neue',cursive", fontSize:12, letterSpacing:3, color:"#00e676", marginBottom:16, opacity:.65 }}>
+              YOUR DRIVING PROFILE
+            </div>
+ 
+            {/* KM slider */}
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:30, fontWeight:700, color:"#00e676", lineHeight:1 }}>
+                {km}<span style={{ fontSize:13, opacity:.5 }}> km/day</span>
+              </div>
+              <div style={{ fontSize:11, color:"#3a5e40", marginBottom:8 }}>{f(mKm)} km/month</div>
+              <input type="range" min={10} max={350} value={km} onChange={e=>setKm(+e.target.value)} style={{ width:"100%" }}/>
+            </div>
+ 
+            <div style={{ height:1, background:"#182618", margin:"14px 0" }}/>
+ 
+            <div style={{ fontSize:10, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Fuel Type</div>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:16 }}>
+              {[["petrol","⛽ Petrol"],["diesel","🚛 Diesel"],["cng","🟢 CNG"]].map(([v,l]) => chip(v,fuel,setFuel,l))}
+            </div>
+ 
+            <div style={{ fontSize:10, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Usage Pattern</div>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:16 }}>
+              {[["personal","Personal"],["rideshare","Rideshare"],["delivery","Fleet / Delivery"]].map(([v,l]) => chip(v,usage,setUsage,l))}
+            </div>
+ 
+            <div style={{ height:1, background:"#182618", margin:"14px 0" }}/>
+ 
+            <div style={{ fontSize:10, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:6 }}>
+              Monthly Fuel Spend ৳ <span style={{ color:"#2e4830", fontWeight:400 }}>(or leave blank to auto-calculate)</span>
+            </div>
+            <input
+              type="number" placeholder={f(autoFuel) + " (auto)"}
+              value={mFuelIn} onChange={e=>setMFuelIn(e.target.value)}
+              style={{ background:"#091208", border:"1px solid #1a2a1c", borderRadius:7, color:"#d4edda", padding:"9px 13px", fontSize:14, fontFamily:"'JetBrains Mono',monospace", width:"100%", outline:"none", marginBottom:5 }}
+            />
+            <div style={{ fontSize:9, color:"#2e4830", marginBottom:16 }}>
+              Auto: ৳{f(autoFuel)}/mo — {FUEL_LABELS[fuel]} @ {P[fuel]} {UNIT_LABELS[fuel]}, {KM_PER_UNIT[fuel]} km/unit
+            </div>
+ 
+            <div style={{ height:1, background:"#182618", margin:"0 0 14px" }}/>
+ 
+            <div style={{ fontSize:10, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Loan Down Payment</div>
+            <div style={{ display:"flex", gap:6, marginBottom:16 }}>
+              {[10,20,30,40].map(v => chip(v,dp,setDp,v+"%"))}
+            </div>
+ 
+            <div style={{ fontSize:10, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Loan Tenure</div>
+            <div style={{ display:"flex", gap:6 }}>
+              {[24,36,48,60].map(v => chip(v,tenure,setTenure,v+" mo"))}
+            </div>
+          </div>
+ 
+          {/* ── RIGHT: RESULTS ── */}
+          <div style={{ background:"#0c1410", border:"1px solid #162518", borderRadius:12, padding:"18px 20px" }}>
+ 
+            {/* Big savings */}
+            <div style={{ textAlign:"center", paddingBottom:16, borderBottom:"1px solid #162518", marginBottom:14 }}>
+              <div style={{ fontSize:10, color:"#4a7052", letterSpacing:2, textTransform:"uppercase" }}>Monthly Savings with Palki</div>
+              <div style={{
+                fontFamily:"'Bebas Neue',cursive", fontSize:58, letterSpacing:2, lineHeight:1.05,
+                color: savings > 0 ? "#00e676" : "#ff5252",
+                textShadow: savings > 0 ? "0 0 40px #00e67650" : "0 0 40px #ff525230"
+              }}>
+                ৳{f(Math.abs(savings))}
+              </div>
+              <div style={{ fontSize:11, color:"#4a7052" }}>
+                {savings > 0
+                  ? `৳${f(annSave)} annually · ${savePct}% less than ${FUEL_LABELS[fuel].toLowerCase()}`
+                  : "Adjust km or pick a model to see savings"}
+              </div>
+            </div>
+ 
+            {/* Fuel vs EV bar */}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#3d5e42", marginBottom:4, letterSpacing:.5 }}>
+                <span>FUEL COST  ৳{f(mFuel)}/mo</span>
+                <span>EV COST  ৳{f(mEv)}/mo</span>
+              </div>
+              <div style={{ position:"relative", height:6, background:"#0a1410", borderRadius:3, overflow:"hidden", marginBottom:4 }}>
+                <div style={{ height:"100%", background:"linear-gradient(90deg,#ff5252,#ff7043)", width:"100%", borderRadius:3 }}/>
+              </div>
+              <div style={{ position:"relative", height:6, background:"#0a1410", borderRadius:3, overflow:"hidden" }}>
+                <div style={{
+                  height:"100%", background:"linear-gradient(90deg,#00e676,#00c853)",
+                  width: mFuel > 0 ? `${Math.min(100, Math.round((mEv/mFuel)*100))}%` : "0%",
+                  borderRadius:3, transition:"width .4s ease"
+                }}/>
+              </div>
+            </div>
+ 
+            {/* 4 metric cards */}
+            <div className="m2" style={{ marginBottom:14 }}>
+              <Metric label="Monthly Fuel" val={"৳"+f(mFuel)} sub={FUEL_LABELS[fuel]} col="#ff7043"/>
+              <Metric label="Monthly EV Cost" val={"৳"+f(mEv)} sub={`${mdl.name} · ৳${P.elec}/kWh`} col="#00e676"/>
+              <Metric label="CO₂ Saved" val={f(Math.max(0,mCo2))+"kg"} sub={`≈ ${treeEq} trees/yr`} col="#69f0ae"/>
+              <Metric label="Break-even" val={bkEven ? bkEven+"mo" : "—"} sub="on vehicle price" col="#ffd740"/>
+            </div>
+ 
+            {/* EMI breakdown */}
+            <div style={{ background:"#091208", borderRadius:9, padding:"13px 15px" }}>
+              <div style={{ fontSize:10, color:"#4a7052", letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>
+                EMI vs Savings · {mdl.name}
+              </div>
+              {row("Vehicle Price",      `৳${f(mdl.price)} (${L(mdl.price)}L)`, "#d4edda")}
+              {row(`Down Payment (${dp}%)`, `৳${f(mdl.price*dp/100)}`, "#ffd740")}
+              {row(`Monthly EMI (${tenure}mo @ 15% p.a.)`, `৳${f(emi)}`, "#ff7043")}
+              {row("Monthly Fuel Savings",  `৳${f(savings)}`, savings>0?"#00e676":"#ff5252")}
+              <div style={{ height:1, background:"#1a2e1e", margin:"8px 0" }}/>
+              {row("Net Monthly Benefit", (netBen>0?"+":"")+"৳"+f(Math.abs(netBen)), netBen>0?"#00e676":"#ff5252", true)}
+              {netBen > 0 && (
+                <div style={{ fontSize:11, color:"#4a9055", marginTop:8, padding:"7px 10px", background:"#00e67608", borderRadius:5, border:"1px solid #00e67618" }}>
+                  ✓ Saves more than the EMI — profit from Day 1
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+ 
+        {/* MODEL SELECTION */}
+        <div style={{ padding:"16px 18px 0" }}>
+          <div style={{ fontFamily:"'Bebas Neue',cursive", fontSize:12, letterSpacing:3, color:"#3a5e40", marginBottom:10 }}>
+            SELECT YOUR PALKI ·{" "}
+            <span style={{ color:"#00e676" }}>{mdl.name} recommended for your profile</span>
+          </div>
+          <div className="m4">
+            {MODELS.map(m => {
+              const active = m.id === mdl.id;
+              const mEv_   = (mKm / m.kpk) * P.elec;
+              return (
+                <div key={m.id}
+                  onClick={() => setSelId(m.id === selId ? null : m.id)}
+                  style={{
+                    background:  active ? m.c+"18" : "#0c1410",
+                    border:      "1px solid " + (active ? m.c : "#162518"),
+                    borderRadius:10, padding:"13px 13px 11px",
+                    cursor:"pointer", transition:"all .2s",
+                    position:"relative", overflow:"hidden"
+                  }}
+                >
+                  {active && <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(90deg,transparent,${m.c},transparent)` }}/>}
+                  <div style={{ position:"absolute", top:0, right:0, background:m.c, color:"#060c09", fontSize:8, fontWeight:800, letterSpacing:1, padding:"3px 7px", borderBottomLeftRadius:6 }}>{m.badge}</div>
+                  <div style={{ fontFamily:"'Bebas Neue',cursive", fontSize:18, letterSpacing:1, lineHeight:1.1, marginTop:2, color:active?m.c:"#d4edda" }}>{m.name}</div>
+                  <div style={{ fontSize:9, color:"#4a7052", marginBottom:9 }}>{m.tag}</div>
+                  {[["Range",m.range+"km"],["Speed",m.spd+"km/h"],["Seats",""+m.seats]].map(([k,v]) => (
+                    <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:10, marginBottom:3 }}>
+                      <span style={{ color:"#3a5a40" }}>{k}</span>
+                      <span style={{ fontFamily:"'JetBrains Mono',monospace", color:"#c4ddc8" }}>{v}</span>
+                    </div>
+                  ))}
+                  <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:13, fontWeight:700, color:m.c, marginTop:8 }}>৳{L(m.price)}L</div>
+                  <div style={{ fontSize:9, color:"#3a5040", marginTop:3 }}>৳{f(mEv_)}/mo charging</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+ 
+        {/* LIVE PRICES PANEL */}
+        <div style={{ margin:"14px 18px 0", background:"#0c1410", border:"1px solid #162518", borderRadius:10, overflow:"hidden" }}>
+          <div onClick={() => setOpenP(!openP)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 18px", cursor:"pointer" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+              <span style={{ fontFamily:"'Bebas Neue',cursive", fontSize:12, letterSpacing:2, color:"#4a7052" }}>⚡ LIVE MARKET RATES</span>
+              <span style={{ fontSize:9, color:"#2e4830" }}>{updated}</span>
+            </div>
+            <div style={{ display:"flex", gap:12, alignItems:"center" }}>
+              {[["⛽","petrol","৳/L"],["🚛","diesel","৳/L"],["🟢","cng","৳/m³"],["⚡","elec","৳/kWh"]].map(([icon,k,u]) => (
+                <span key={k} style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:11, color:"#00e676" }}>{icon} {P[k]}<span style={{ fontSize:8, color:"#3a5040" }}>{u}</span></span>
+              ))}
+              <span style={{ fontSize:10, color:"#3a5a40" }}>{openP?"▲":"▼"}</span>
+            </div>
+          </div>
+          {openP && (
+            <div className="pg" style={{ padding:"0 18px 18px" }}>
+              {[["Petrol","petrol","৳/liter"],["Diesel","diesel","৳/liter"],["CNG","cng","৳/m³"],["Electricity","elec","৳/kWh"]].map(([lbl,key,unit]) => (
+                <div key={key}>
+                  <div style={{ fontSize:9, color:"#4a7052", letterSpacing:.5, marginBottom:5 }}>{lbl} ({unit})</div>
+                  <input
+                    type="number" value={P[key]}
+                    onChange={e => setP(v => ({ ...v, [key]: +e.target.value || v[key] }))}
+                    style={{ background:"#091208", border:"1px solid #1a2a1c", borderRadius:6, color:"#00e676", padding:"7px 10px", fontSize:13, fontFamily:"'JetBrains Mono',monospace", width:"100%", outline:"none" }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+ 
+        {/* FOOTNOTE STATS */}
+        <div style={{ margin:"12px 18px 0", display:"flex", gap:8, flexWrap:"wrap" }}>
+          {[
+            ["Petrol", `৳${P.petrol}/L`, "#ff7043"],
+            ["EV Savings/yr", `৳${f(Math.max(0,annSave))}`, "#00e676"],
+            ["CO₂ saved/yr", `${f(Math.max(0,mCo2*12))}kg`, "#69f0ae"],
+            ["EMI", `৳${f(emi)}/mo`, "#ffd740"],
+            ["Net benefit", (netBen>0?"+":"")+"৳"+f(netBen)+"/mo", netBen>0?"#00e676":"#ff5252"],
+          ].map(([k,v,c]) => (
+            <div key={k} style={{ background:"#0a1410", border:"1px solid #162518", borderRadius:6, padding:"7px 12px", flex:1, minWidth:100 }}>
+              <div style={{ fontSize:9, color:"#3a5040", letterSpacing:.5 }}>{k}</div>
+              <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:12, fontWeight:700, color:c, marginTop:2 }}>{v}</div>
+            </div>
+          ))}
+        </div>
+ 
+        {/* CTA */}
+        <div style={{ padding:"20px 18px 0", textAlign:"center" }}>
+          <button
+            onClick={() => window.open("https://palkimotors.com","_blank")}
+            style={{
+              background:"linear-gradient(135deg,#00e676 0%,#00c853 100%)",
+              color:"#050c06", fontWeight:800, fontSize:13, letterSpacing:2,
+              padding:"14px 40px", borderRadius:8, border:"none", cursor:"pointer",
+              fontFamily:"'Plus Jakarta Sans',sans-serif", textTransform:"uppercase",
+              boxShadow:"0 4px 28px #00e67640", width:"100%", maxWidth:440
+            }}
+          >
+            Book a Test Drive with Palki →
+          </button>
+          <div style={{ fontSize:9, color:"#2a4030", marginTop:8, letterSpacing:.4 }}>
+            Estimates based on average Dhaka usage & Jun 2026 market rates. Visit palkimotors.com for exact pricing, financing & availability.
+          </div>
+        </div>
+ 
+      </div>
+    </>
+  );
+}
+
